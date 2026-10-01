@@ -85,7 +85,9 @@ For each pin in the lockfile and each bundle on disk:
 ### 4.1 Reasons are payloads, not prose
 
 A bare status is not a diagnosis: a CI line that prints `tree hash mismatch` sends a human
-bisecting. Every non-`verified` entry MUST carry a machine-readable `reason` object:
+bisecting. (Credit: the failure-visibility review by @zzzz0902zzzz-rgb on agentskills
+discussion #588: "a failure must print why, a bare 'no' is the bug.") Every non-`verified`
+entry MUST carry a machine-readable `reason` object:
 
 - `modified`: `changed_files`, each entry `{path, kind: added|removed|modified, expected, actual}`
   where `expected`/`actual` are the pinned and observed per-file digests (`null` for
