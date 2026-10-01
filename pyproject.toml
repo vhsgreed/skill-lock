@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "skill-lock"
-version = "0.1.0"
+version = "0.2.0"
 description = "Vendor-neutral hash pinning and per-skill update control for agent skills (SKILL.md bundles)"
 readme = "README.md"
 requires-python = ">=3.10"

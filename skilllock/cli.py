@@ -4,9 +4,19 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
+from dataclasses import asdict
 from pathlib import Path
 
-from .core import LockError, lock_root, update_skill, verify
+from .core import LockError, lock_root, save_lock, update_skill, verify
+
+
+def _write_evidence(evidence_dir, command: str, payload: dict) -> None:
+    """Per-attempt evidence (SPEC 5.1): distinct file per run, never truncate."""
+    directory = Path(evidence_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / f"{command}-{time.time_ns()}.json"
+    target.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def main(argv=None) -> int:
@@ -22,18 +32,22 @@ def main(argv=None) -> int:
     p_verify = sub.add_parser("verify", help="compare installed bundles against the lockfile")
     p_verify.add_argument("root")
     p_verify.add_argument("-l", "--lock", default="skills-lock.json")
+    p_verify.add_argument("--evidence", default=None,
+                          help="write the raw result payload to a per-attempt file in DIR")
 
     p_update = sub.add_parser("update", help="re-pin ONE skill after reviewing its changes")
     p_update.add_argument("name")
     p_update.add_argument("root")
     p_update.add_argument("-l", "--lock", default="skills-lock.json")
     p_update.add_argument("--yes", action="store_true", help="write the new lockfile entry")
+    p_update.add_argument("--evidence", default=None,
+                          help="write the raw result payload to a per-attempt file in DIR")
 
     args = parser.parse_args(argv)
     try:
         if args.command == "lock":
             lock = lock_root(Path(args.root), allow_shadow=args.allow_shadow)
-            Path(args.output).write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
+            save_lock(Path(args.output), lock)
             print(f"skilllock: pinned {len(lock['skills'])} skill(s) -> {args.output}")
             return 0
 
@@ -43,9 +57,23 @@ def main(argv=None) -> int:
                 print(f"skilllock: lockfile not found: {lock_path}", file=sys.stderr)
                 return 2
             statuses = verify(Path(args.root), json.loads(lock_path.read_text()))
+            if args.evidence:
+                _write_evidence(args.evidence, "verify", {
+                    "command": "verify", "root": args.root, "lock": args.lock,
+                    "statuses": [asdict(s) for s in statuses],
+                })
             for s in statuses:
-                extra = f"  changed: {', '.join(s.changed_files)}" if s.changed_files else ""
-                print(f"{s.status:<10} {s.rel}{extra}")
+                print(f"{s.status:<10} {s.rel}")
+                if s.status == "modified":
+                    for d in s.reason.get("changed_files", []):
+                        print(f"             ~ {d['path']} [{d['kind']}] "
+                              f"{(d['expected'] or 'none')[:15]} -> {(d['actual'] or 'none')[:15]}")
+                elif s.status == "missing":
+                    print(f"             expected tree {str(s.reason.get('expected'))[:22]}")
+                    for p in s.reason.get("searched", []):
+                        print(f"             searched: {p}")
+                elif s.status == "untracked":
+                    print(f"             at {s.reason.get('path')}")
             ok = all(s.status == "verified" for s in statuses)
             print(f"skilllock: {sum(s.status == 'verified' for s in statuses)}/{len(statuses)} verified")
             return 0 if ok else 1
@@ -57,6 +85,12 @@ def main(argv=None) -> int:
                 return 2
             lock = json.loads(lock_path.read_text())
             new_lock, changes = update_skill(Path(args.root), lock, args.name)
+            if args.evidence:
+                _write_evidence(args.evidence, "update", {
+                    "command": "update", "name": args.name,
+                    "root": args.root, "lock": args.lock,
+                    "changes": changes, "written": bool(args.yes),
+                })
             for rel, info in changes.items():
                 print(f"changes in {rel}:")
                 for f in info["changed_files"]:
@@ -66,7 +100,7 @@ def main(argv=None) -> int:
             if not args.yes:
                 print("skilllock: review the changes above; re-run with --yes to re-pin")
                 return 0
-            lock_path.write_text(json.dumps(new_lock, indent=2) + "\n", encoding="utf-8")
+            save_lock(lock_path, new_lock)
             print(f"skilllock: re-pinned {args.name}")
             return 0
     except LockError as exc:

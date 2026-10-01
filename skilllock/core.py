@@ -1,7 +1,14 @@
-"""Lockfile core: bundle discovery, content hashing, verify statuses, per-skill update."""
+"""Lockfile core: bundle discovery, content hashing, verify statuses, per-skill update.
+
+Draft-02 semantics (failure-visibility review): reasons are payloads (every non-verified
+entry carries machine-readable evidence), localization is digest-only, and updates are
+fail-closed (old pins survive any failure; new pins are re-hashed before commit).
+"""
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,8 +25,9 @@ class LockError(Exception):
 @dataclass
 class SkillStatus:
     rel: str
-    status: str  # verified | modified | missing | untracked
-    changed_files: list = field(default_factory=list)
+    status: str  # verified | modified | missing | untracked | unverified-source
+    changed_files: list = field(default_factory=list)  # paths only (compat)
+    reason: dict = field(default_factory=dict)  # machine-readable evidence
 
 
 def _sha256(data: bytes) -> str:
@@ -75,6 +83,18 @@ def _entry_for(rel: str, bundle: Path) -> dict:
     }
 
 
+def _file_deltas(pinned: dict[str, str], current: dict[str, str]) -> list[dict]:
+    """Digest-only localization (SPEC 4.2): names files from digest maps alone."""
+    deltas = []
+    for name in sorted(set(pinned) | set(current)):
+        exp, act = pinned.get(name), current.get(name)
+        if exp == act:
+            continue
+        kind = "added" if exp is None else "removed" if act is None else "modified"
+        deltas.append({"path": name, "kind": kind, "expected": exp, "actual": act})
+    return deltas
+
+
 def lock_root(root: Path, allow_shadow: bool = False) -> dict:
     root = Path(root)
     if not root.is_dir():
@@ -98,20 +118,24 @@ def verify(root: Path, lock: dict) -> list[SkillStatus]:
     for rel, entry in sorted(lock.get("skills", {}).items()):
         bundle = on_disk.get(rel)
         if bundle is None:
-            statuses.append(SkillStatus(rel, "missing"))
+            statuses.append(SkillStatus(rel, "missing", reason={
+                "expected": entry.get("tree_hash"),
+                "searched": [str(root / rel)],
+            }))
             continue
         current = _bundle_files(bundle)
-        if _tree_hash(current) == entry.get("tree_hash") and current == entry.get("files"):
+        pinned = entry.get("files", {})
+        deltas = _file_deltas(pinned, current)
+        if not deltas and _tree_hash(current) == entry.get("tree_hash"):
             statuses.append(SkillStatus(rel, "verified"))
         else:
-            pinned = entry.get("files", {})
-            changed = sorted(
-                set(pinned) ^ set(current)
-                | {n for n in set(pinned) & set(current) if pinned[n] != current[n]}
-            )
-            statuses.append(SkillStatus(rel, "modified", changed))
+            statuses.append(SkillStatus(
+                rel, "modified",
+                changed_files=[d["path"] for d in deltas],
+                reason={"changed_files": deltas},
+            ))
     for rel in sorted(set(on_disk) - set(lock.get("skills", {}))):
-        statuses.append(SkillStatus(rel, "untracked"))
+        statuses.append(SkillStatus(rel, "untracked", reason={"path": str(root / rel)}))
     return statuses
 
 
@@ -131,13 +155,31 @@ def update_skill(root: Path, lock: dict, name: str) -> tuple[dict, dict]:
         raise LockError(f"bundle not on disk: {rel}")
     old = lock["skills"][rel]
     new_entry = _entry_for(rel, bundle)
-    changed = sorted(
-        set(old.get("files", {})) ^ set(new_entry["files"])
-        | {n for n in set(old.get("files", {})) & set(new_entry["files"])
-           if old["files"][n] != new_entry["files"][n]}
-    )
+    # Fail closed (SPEC 5): re-hash and compare before anything may be committed.
+    recheck = _entry_for(rel, bundle)
+    if recheck != new_entry:
+        raise LockError(
+            f"bundle {rel} drifted while updating; refusing to re-pin (old pins remain)"
+        )
+    deltas = _file_deltas(old.get("files", {}), new_entry["files"])
     new_lock = {
         **lock,
         "skills": {**lock["skills"], rel: new_entry},
     }
-    return new_lock, {rel: {"changed_files": changed}}
+    return new_lock, {rel: {"changed_files": [d["path"] for d in deltas]}}
+
+
+def save_lock(path: Path, lock: dict) -> None:
+    """Atomic replace (SPEC 5): write aside, then rename. Old pins survive any failure."""
+    path = Path(path)
+    tmp = path.parent / (path.name + ".tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(lock, fh, indent=2)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise

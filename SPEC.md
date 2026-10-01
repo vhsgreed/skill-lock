@@ -1,4 +1,4 @@
-# skills-lock.json — Open Specification (draft-01)
+# skills-lock.json — Open Specification (draft-02)
 
 **Status:** draft, seeking comment. **Scope:** integrity pinning and update control for
 agent skill bundles (`SKILL.md` + accompanying files), independent of any agent runtime.
@@ -62,7 +62,7 @@ Field semantics:
   `sha256:`.
 - `tree_hash` = SHA-256 over the concatenation of `"<path>\0<digest>\n"` for every entry of
   `files`, sorted by path. It is the single-value identity of the bundle.
-- `source` is reserved for provenance (registry URL, git remote); null in draft-01.
+- `source` is reserved for provenance (registry URL, git remote); null in draft-02.
 - `attestations` is reserved for signature envelopes (e.g. Sigstore, `skill.sig`);
   implementations MUST accept and preserve unknown entries here (forward compatibility).
 
@@ -75,11 +75,35 @@ For each pin in the lockfile and each bundle on disk:
 | Status | Meaning |
 |---|---|
 | `verified` | bundle on disk hashes exactly to its pin |
-| `modified` | bundle exists but files or hashes differ; the tool MUST list changed file paths (added, removed, or content-changed) |
-| `missing` | pinned bundle absent from disk |
+| `modified` | bundle exists but files or hashes differ; the entry MUST carry a per-file delta (see below) |
+| `missing` | pinned bundle absent from disk; the entry MUST carry the searched path(s) and the expected tree hash |
 | `untracked` | bundle on disk with no pin |
+| `unverified-source` | bundle content was resolved from a fallback (cache, mirror, vendored copy) rather than the installed disk path |
 
 `verify` succeeds (exit 0) only if every status is `verified`.
+
+### 4.1 Reasons are payloads, not prose
+
+A bare status is not a diagnosis: a CI line that prints `tree hash mismatch` sends a human
+bisecting. Every non-`verified` entry MUST carry a machine-readable `reason` object:
+
+- `modified`: `changed_files`, each entry `{path, kind: added|removed|modified, expected, actual}`
+  where `expected`/`actual` are the pinned and observed per-file digests (`null` for
+  added/removed sides).
+- `missing`: `searched` (the resolved paths that were checked) and `expected` (the pinned
+  `tree_hash`).
+- `untracked`: `path` (the discovered bundle path).
+- `unverified-source`: `resolved_from` (where the bytes actually came from) and `path`
+  (where they were expected).
+
+### 4.2 Localization is digest-only (normative)
+
+Changed-file attribution MUST be computed from the per-file digest maps alone. Tools MUST
+NOT localize changes via textual diff, content greps, or heuristics over file text:
+text-based attribution produces both false greens (a real change dismissed as "just a
+warning string") and false reds (an unchanged file blamed for scary-looking text). The
+`tree_hash` is a cheap mismatch trigger only; it is not evidence and cannot name a file.
+Evidence that names a file comes from digest comparison, full stop.
 
 ## 5. Update semantics (`update`)
 
@@ -91,8 +115,19 @@ unit of update is **one named skill**:
    writing the new pin requires an explicit confirmation flag.
 3. Rewrite only that bundle's pin; every other pin MUST remain byte-identical.
 
-This directly removes attack primitive 2 (blind bulk updates): a skill that turns malicious
-on update surfaces as a per-skill change that must be reviewed and accepted.
+Update MUST be crash-safe and fail-closed: the new pin set is re-hashed and compared against
+the bundle before it is committed, the lockfile is replaced atomically (write aside, then
+rename), and on ANY failure (drift during update, read errors, interrupted write) the
+previous pins remain in force, byte-identical. "Best effort" partial re-pins are forbidden:
+a lockfile that has been through a failed update is either untouched or fully consistent.
+
+### 5.1 Evidence (SHOULD)
+
+Verification and update runs SHOULD write their raw result payload to a per-attempt file
+(distinct name per run; never truncate a previous attempt). This is runner policy rather
+than lockfile semantics, which is why it is a SHOULD: forensically, re-running into the same
+log destroys exactly the evidence a failed verification created. The reference
+implementation demonstrates this with `--evidence DIR`.
 
 ## 6. Name shadowing
 
@@ -117,7 +152,7 @@ shadowing is detected, and MAY offer an explicit override flag for the rare legi
 
 ## 9. Reference implementation
 
-`skilllock` (this repository) implements draft-01: `lock`, `verify`, `update`. The test
+`skilllock` (this repository) implements draft-02: `lock`, `verify`, `update`. The test
 corpus enforces the semantics of sections 4–6.
 
 ## 10. Prior art and evidence
