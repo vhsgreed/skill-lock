@@ -1,4 +1,4 @@
-# skills-lock.json — Open Specification (draft-02)
+# skills-lock.json — Open Specification (draft-03)
 
 **Status:** draft, seeking comment. **Scope:** integrity pinning and update control for
 agent skill bundles (`SKILL.md` + accompanying files), independent of any agent runtime.
@@ -44,7 +44,11 @@ A lockfile is UTF-8 JSON:
         "references/notes.md": "sha256:<hex>"
       },
       "tree_hash": "sha256:<hex>",
-      "source": null,
+      "source": {
+        "type": "git",
+        "resolved": "https://github.com/owner/repo.git",
+        "declared": "https://github.com/owner/repo/tree/main/skills/skill-a"
+      },
       "attestations": []
     }
   }
@@ -62,7 +66,21 @@ Field semantics:
   `sha256:`.
 - `tree_hash` = SHA-256 over the concatenation of `"<path>\0<digest>\n"` for every entry of
   `files`, sorted by path. It is the single-value identity of the bundle.
-- `source` is reserved for provenance (registry URL, git remote); null in draft-02.
+- `source` records provenance as `null` (unknown) or an object of three fields
+  (draft-03; this is the normative answer to discussion #588 Q1, "where does a skill's
+  source canonically live?" — **in the lockfile**):
+  - `type` — `git | url | registry | vendor | local`. Derived from `resolved` when
+    possible. It is machine-assigned, never authored in SKILL.md.
+  - `resolved` — the exact URL the installer fetched the bytes from. A receipt, written
+    by the tool at install time; `null` if the bundle was never fetched (copied by hand,
+    vendored, local).
+  - `declared` — the author's claim: a verbatim mirror of the bundle's `metadata.source`
+    frontmatter key if present (see Appendix A), else `null`.
+- The two records are two records on purpose. `resolved` is evidence; `declared` is a
+  claim. They may legitimately differ (mirrors, vendoring, a repo subpath vs. its clone
+  URL). Tools MAY warn on mismatch; they MUST NOT fail on it. Where tooling needs one
+  authoritative value, `resolved` wins: **the lockfile is authoritative, frontmatter is a
+  hint** (npm's `package.json` vs. `package-lock.json` `resolved` split).
 - `attestations` is reserved for signature envelopes (e.g. Sigstore, `skill.sig`);
   implementations MUST accept and preserve unknown entries here (forward compatibility).
 
@@ -110,7 +128,10 @@ Evidence that names a file comes from digest comparison, full stop.
 ## 5. Update semantics (`update`)
 
 A conforming tool MUST NOT provide a bulk update without an explicit bulk flag. The default
-unit of update is **one named skill**:
+unit of update is **one named skill**. This is normative, not guidance: the per-skill unit
+and the review step below are mandatory, and a tool may choose its UI but never the unit of
+update (the normative answer to discussion #588 Q3). The changes summary an update produces
+MUST carry a `locally_modified` boolean per touched bundle, so tools never infer it.
 
 1. Re-hash only the named bundle.
 2. Present the changed-file list to the operator (the review step). In non-interactive use,
@@ -123,7 +144,26 @@ rename), and on ANY failure (drift during update, read errors, interrupted write
 previous pins remain in force, byte-identical. "Best effort" partial re-pins are forbidden:
 a lockfile that has been through a failed update is either untouched or fully consistent.
 
-### 5.1 Evidence (SHOULD)
+### 5.1 The update-fetch rule (normative)
+
+Where an update gets bytes from is decided by the **pinned lockfile entry alone**:
+
+1. If `source.resolved` is pinned, update MUST fetch from `resolved`.
+2. Else if `source.declared` is pinned, one update MAY fetch from `declared` — the one-shot
+   fallback for manually installed bundles (the #564 case) — and MUST then record the URL
+   the bytes actually came from as the new `source.resolved` and re-pin. The receipt step
+   is part of the rule, not optional bookkeeping: after the first update, rule 1 applies.
+3. Else (source `null`), there is no fetch source: update is a local re-pin and MUST NOT
+   attempt any fetch.
+4. Update MUST NOT fetch from any URL found in current bundle content (including
+   `metadata.source` in the on-disk `SKILL.md`). Otherwise a modified skill could redirect
+   its own update to an attacker-controlled URL while its content hashes verify —
+   **update-hijack**. Fetch URLs come only from the pinned entry; the frontmatter's
+   `metadata.source` may be refreshed into `source.declared` on re-pin (it is a claim, kept
+   honest and current) but is never a fetch authority for a bundle that has a pinned
+   `resolved`.
+
+### 5.2 Evidence (SHOULD)
 
 Verification and update runs SHOULD write their raw result payload to a per-attempt file
 (distinct name per run; never truncate a previous attempt). This is runner policy rather
@@ -151,11 +191,20 @@ shadowing is detected, and MAY offer an explicit override flag for the rare legi
   scanning-layer decision (TOFU — trust on first use — is the honest default).
 - SHA-256 is used for ubiquity; tools MAY record additional digests in reserved fields.
 - Lockfiles SHOULD be committed to version control so that drift is reviewed in code review.
+- **`source` is provenance, not integrity.** The `source` fields are not covered by
+  `tree_hash` (which spans `files` alone): a tampered lockfile can redirect a future update
+  while every content hash still verifies. The mitigation is the boring one — commit
+  lockfiles to version control and review lockfile diffs — and a change to `source.resolved`
+  or `source.declared` MUST be treated as a security-relevant diff, not bookkeeping. This
+  limitation is stated here rather than fixed here; fixing it requires signing (see
+  `attestations`).
 
 ## 9. Reference implementation
 
-`skilllock` (this repository) implements draft-02: `lock`, `verify`, `update`. The test
-corpus enforces the semantics of sections 4–6.
+`skilllock` (this repository) implements draft-03: `lock`, `verify`, `update`. The test
+corpus enforces the semantics of sections 3–6 (37 behavior tests), including the
+update-fetch rule as a structural property: `resolve_update_source()` can only ever return
+URLs from the pinned entry, so a bundle's own content cannot feed the fetch decision.
 
 ## 10. Prior art and evidence
 
@@ -164,3 +213,27 @@ corpus enforces the semantics of sections 4–6.
 - Snyk, "ToxicSkills" (2026) — 36% prompt-injection rate in tested skills.
 - Vercel `skills` CLI issue #283 — community demand for lockfile-driven install/sync.
 - npm `package-lock.json`, Cargo `Cargo.lock`, Go `go.sum` — the dependency-pinning lineage.
+
+## Appendix A. Interoperability mapping
+
+The ecosystem has three provenance-shaped records. They map by meaning, not by value;
+hashes from different algorithms are never interchangeable.
+
+| skills-lock.json | Vercel `skills` CLI | SKILL.md frontmatter (#564) | Notes |
+|---|---|---|---|
+| `source.resolved` | `sourceUrl` | — | exact fetch URL; tool-written receipt |
+| `source.declared` | — | `metadata.source` | author's claim, mirrored verbatim |
+| `source.type` | `sourceType` | — | derived from `resolved`, never authored |
+| `tree_hash` | `skillFolderHash` | — | structural counterpart only: different algorithm and input set; digests do **not** verify against each other |
+| `files.*` | — | — | per-file pinning has no counterpart here; this granularity is the point of this spec |
+| `name`, `version` | — | `name`, `metadata.version` | frontmatter-derived in both formats |
+
+### A.1 The `metadata.source` frontmatter key (discussion #564)
+
+An author MAY declare an origin in `SKILL.md` frontmatter (`metadata.source`), in either the
+nested `metadata:` block form or the flat `metadata.source:` form. It answers "where did
+the author say this came from?" for humans and for installers — and it is deliberately not
+an authority: tools SHOULD copy it into `source.declared` at lock time and refresh it on
+re-pin (it is a claim; keeping it stale serves nobody), but all fetch and trust decisions
+use the lockfile (section 5.1). This is the same division npm settled on: the manifest may
+suggest, the lock records.
