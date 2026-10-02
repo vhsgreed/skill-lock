@@ -59,6 +59,23 @@ def _frontmatter(bundle: Path) -> dict:
             m = re.match(r"^(name|version):\s*(.+?)\s*$", line)
             if m:
                 meta[m.group(1)] = m.group(2).strip().strip("\"'")
+    block = match.group(1) if match else ""
+    # #564 metadata.source: the author's claimed origin (a hint, not authority).
+    # Tolerate both the metadata: block form and the flat key form; the lockfile
+    # is authoritative and this value is only mirrored into source.declared.
+    flat = re.search(r"^metadata\.source\s*:\s*(\S+)\s*$", block, re.MULTILINE)
+    if flat:
+        meta["source"] = flat.group(1)
+    else:
+        nested = re.search(r"^metadata:\s*\n((?:[ \t]+\S.*\n?)*)", block, re.MULTILINE)
+        if nested:
+            inner = nested.group(1)
+            source = re.search(r"^[ \t]+source\s*:\s*(\S+)\s*$", inner, re.MULTILINE)
+            if source:
+                meta["source"] = source.group(1)
+            version = re.search(r"^[ \t]+version\s*:\s*(\S+)\s*$", inner, re.MULTILINE)
+            if version and "version" not in meta:
+                meta["version"] = version.group(1).strip().strip("\"'")
     return meta
 
 
@@ -72,15 +89,46 @@ def _discover(root: Path) -> dict[str, Path]:
     return bundles
 
 
-def _entry_for(rel: str, bundle: Path) -> dict:
+def _derive_type(resolved: str | None) -> str:
+    """Derive source type from the URL, never authored (agentskills #564)."""
+    if not resolved:
+        return "local"
+    return "git" if resolved.endswith(".git") else "url"
+
+
+def _entry_for(rel: str, bundle: Path, source: dict | None = None) -> dict:
     meta = _frontmatter(bundle)
     files = _bundle_files(bundle)
+    resolved = (source or {}).get("resolved")
     return {
         "name": meta.get("name", bundle.name),
         "version": meta.get("version"),
+        "source": {
+            "type": (source or {}).get("type") or _derive_type(resolved),
+            "resolved": resolved,
+            "declared": meta.get("source"),
+        },
         "files": files,
         "tree_hash": _tree_hash(files),
     }
+
+
+def resolve_update_source(entry: dict) -> tuple[str | None, str | None]:
+    """The only fetch sources an update may use: the pinned entry itself.
+
+    Returns ("resolved", url) for a tool-recorded receipt, ("declared", url) for
+    the one-shot author-claim fallback (#564 manual installs), or (None, None).
+    URLs found in bundle content are deliberately unreachable from here, so a
+    modified skill can never redirect its own update (update-hijack).
+    """
+    source = entry.get("source") or {}
+    resolved = source.get("resolved")
+    if resolved:
+        return "resolved", resolved
+    declared = source.get("declared")
+    if declared:
+        return "declared", declared
+    return None, None
 
 
 def _file_deltas(pinned: dict[str, str], current: dict[str, str]) -> list[dict]:
@@ -95,14 +143,14 @@ def _file_deltas(pinned: dict[str, str], current: dict[str, str]) -> list[dict]:
     return deltas
 
 
-def lock_root(root: Path, allow_shadow: bool = False) -> dict:
+def lock_root(root: Path, allow_shadow: bool = False, source: dict | None = None) -> dict:
     root = Path(root)
     if not root.is_dir():
         raise LockError(f"not a directory: {root}")
     skills = {}
     names_seen: dict[str, list[str]] = {}
     for rel, bundle in _discover(root).items():
-        skills[rel] = _entry_for(rel, bundle)
+        skills[rel] = _entry_for(rel, bundle, source=source)
         names_seen.setdefault(skills[rel]["name"], []).append(rel)
     shadowed = {n: rels for n, rels in names_seen.items() if len(rels) > 1}
     if shadowed and not allow_shadow:
@@ -139,7 +187,8 @@ def verify(root: Path, lock: dict) -> list[SkillStatus]:
     return statuses
 
 
-def update_skill(root: Path, lock: dict, name: str) -> tuple[dict, dict]:
+def update_skill(root: Path, lock: dict, name: str,
+                 resolved_from: str | None = None) -> tuple[dict, dict]:
     root = Path(root)
     matches = [
         rel for rel, entry in lock.get("skills", {}).items()
@@ -161,12 +210,36 @@ def update_skill(root: Path, lock: dict, name: str) -> tuple[dict, dict]:
         raise LockError(
             f"bundle {rel} drifted while updating; refusing to re-pin (old pins remain)"
         )
+    # Source merge (SPEC 3): declared is refreshed from content (it is a claim),
+    # resolved is a receipt -- kept unless the caller records where the new bytes
+    # actually came from (the post-fallback step of the update-fetch rule).
+    old_source = old.get("source") or {}
+    built = new_entry["source"]
+    if resolved_from:
+        new_entry["source"] = {
+            "type": built["type"],
+            "resolved": resolved_from,
+            "declared": built["declared"],
+        }
+    else:
+        new_entry["source"] = {
+            "type": old_source.get("type") or built["type"],
+            "resolved": old_source.get("resolved"),
+            "declared": built["declared"],
+        }
+    # Forward-compat preservation: unknown entry keys survive a re-pin untouched.
+    for key, value in old.items():
+        if key not in {"name", "version", "source", "files", "tree_hash"}:
+            new_entry.setdefault(key, value)
     deltas = _file_deltas(old.get("files", {}), new_entry["files"])
     new_lock = {
         **lock,
         "skills": {**lock["skills"], rel: new_entry},
     }
-    return new_lock, {rel: {"changed_files": [d["path"] for d in deltas]}}
+    return new_lock, {rel: {
+        "changed_files": [d["path"] for d in deltas],
+        "locally_modified": bool(deltas),
+    }}
 
 
 def save_lock(path: Path, lock: dict) -> None:

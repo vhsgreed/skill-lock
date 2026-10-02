@@ -28,6 +28,10 @@ def main(argv=None) -> int:
     p_lock.add_argument("-o", "--output", default="skills-lock.json")
     p_lock.add_argument("--allow-shadow", action="store_true",
                         help="permit duplicate skill names (dangerous: enables silent override)")
+    p_lock.add_argument("--source-url", default=None,
+                        help="record where these bytes were actually fetched from (source.resolved)")
+    p_lock.add_argument("--source-type", default=None,
+                        help="override the derived source type (git | url | registry | vendor | local)")
 
     p_verify = sub.add_parser("verify", help="compare installed bundles against the lockfile")
     p_verify.add_argument("root")
@@ -40,13 +44,19 @@ def main(argv=None) -> int:
     p_update.add_argument("root")
     p_update.add_argument("-l", "--lock", default="skills-lock.json")
     p_update.add_argument("--yes", action="store_true", help="write the new lockfile entry")
+    p_update.add_argument("--resolved-from", default=None,
+                          help="record where the new bytes really came from (post-fallback receipt)")
     p_update.add_argument("--evidence", default=None,
                           help="write the raw result payload to a per-attempt file in DIR")
 
     args = parser.parse_args(argv)
     try:
         if args.command == "lock":
-            lock = lock_root(Path(args.root), allow_shadow=args.allow_shadow)
+            source = None
+            if args.source_url or args.source_type:
+                source = {"resolved": args.source_url, "type": args.source_type}
+            lock = lock_root(Path(args.root), allow_shadow=args.allow_shadow,
+                             source=source)
             save_lock(Path(args.output), lock)
             print(f"skilllock: pinned {len(lock['skills'])} skill(s) -> {args.output}")
             return 0
@@ -84,7 +94,8 @@ def main(argv=None) -> int:
                 print(f"skilllock: lockfile not found: {lock_path}", file=sys.stderr)
                 return 2
             lock = json.loads(lock_path.read_text())
-            new_lock, changes = update_skill(Path(args.root), lock, args.name)
+            new_lock, changes = update_skill(Path(args.root), lock, args.name,
+                                            resolved_from=args.resolved_from)
             if args.evidence:
                 _write_evidence(args.evidence, "update", {
                     "command": "update", "name": args.name,
