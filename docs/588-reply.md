@@ -59,6 +59,18 @@ My reason is that per-attempt logging is runner policy, not lockfile semantics; 
 want conformant lockfile parsers failing over log handling. If you can state what a
 lockfile consumer can observe that makes MUST enforceable, I'll upgrade it in draft-04.
 
+**@jimy-r (James Ross)** -- the timing gap you describe is real and I've made it normative
+in draft-03 (SPEC 4.3): verification MUST precede harness visibility. Unpack in a staging
+location the harness cannot see, run the full verify there, and only move a fully verified
+tree into the load path (atomic rename where the filesystem allows). Your observation is
+the reason: `untracked` and `modified` only protect you if they are computed before the
+bundle sits somewhere a harness will load it; after that, the verdict is a receipt about an
+accident that already happened. I've also kept your framing in the spec: verifying a tree
+already inside a load path is an incident check, not an install step. Your hook plus
+hand-written acknowledgement file (the "cheap hook beats a careful agent" pattern in your
+PATTERNS.md) is exactly the right defense in depth; the ordering rule covers the case where
+no such hook is installed.
+
 **Interop:** Appendix A maps our fields to Vercel's `sourceUrl`/`sourceType`/
 `skillFolderHash` and to #564's `metadata.source`. Honest footnote in the table:
 `skillFolderHash` and `tree_hash` are structural counterparts only; different algorithm,
@@ -76,6 +88,8 @@ Design decisions, one line each, so follow-ups don't have to re-derive them:
 - Per-skill + review mandatory: bulk-by-default is exactly attack primitive 2.
 - `source` outside the tree hash: stated as a limitation, not hidden; lockfile-in-git with
   reviewed diffs until signing lands.
+- Verify before load (new, from James Ross's comment): a check that runs after a harness can
+  see the tree is a receipt about an accident that already happened.
 
 -- Karl (github.com/vhsgreed)
 

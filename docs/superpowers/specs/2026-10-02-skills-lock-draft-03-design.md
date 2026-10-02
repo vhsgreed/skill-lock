@@ -87,3 +87,13 @@ Behavior tests (skilllock):
 
 Evidence SHOULD->MUST upgrade, scale rules (optional files, generated skills, monorepos,
 partial locks), stable bundle IDs. None are blocked by draft-03; all can land as draft-04.
+
+## Addendum 2026-10-02, sixth decision (from James Ross on #588)
+
+Verify before load (new normative rule, SPEC 4.3): an installer unpacks in a staging
+location the harness cannot see, verifies there, and only then moves a verified tree into
+the load path. Attack: a tree unpacked inside a workspace gets registered by the harness at
+first read, before any verify runs. Defense: a check that runs after a harness can see the
+tree is a receipt about an accident that already happened. Cross-referenced to James Ross's
+hook-plus-acknowledgement pattern (agent-workspace-architecture PATTERNS.md #7), which
+remains valid defense in depth. The reply draft acknowledges his comment and states the rule.

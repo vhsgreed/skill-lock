@@ -125,6 +125,30 @@ warning string") and false reds (an unchanged file blamed for scary-looking text
 `tree_hash` is a cheap mismatch trigger only; it is not evidence and cannot name a file.
 Evidence that names a file comes from digest comparison, full stop.
 
+### 4.3 Timing: verification precedes harness visibility (normative)
+
+The statuses in this section only protect a system if they are computed before the bundle
+sits somewhere a harness will load it. Agent harnesses register skills opportunistically: a
+tree unpacked inside a workspace can be picked up by a running agent as soon as any file in
+it is read (observed in Claude Code, where `.claude/skills/` joins the session roster at
+first read), which is before any verify step in an install flow would run. A `modified` or
+`untracked` verdict produced after that point is a receipt about an accident that already
+happened.
+
+A conforming installer MUST follow verify-then-move ordering:
+
+1. Fetch and unpack into a staging location that is not harness-visible (outside any
+   skills/plugins directory the harness scans, or a directory the harness is configured to
+   ignore).
+2. Run the full verify (or lock+verify) flow against the staged tree.
+3. Move only a fully verified tree into the load path, in a single atomic rename where the
+   filesystem allows it.
+
+Verification of a tree already inside a load path MUST be reported as an incident check,
+not an install step: its verdicts describe what a harness may already have loaded. Hooks
+that gate installs on a human acknowledgement file remain valid defense in depth; this
+section is the ordering guarantee that does not depend on one being installed.
+
 ## 5. Update semantics (`update`)
 
 A conforming tool MUST NOT provide a bulk update without an explicit bulk flag. The default
