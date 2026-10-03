@@ -1,4 +1,4 @@
-# skills-lock.json — Open Specification (draft-03)
+# skills-lock.json — Open Specification (draft-04)
 
 **Status:** draft, seeking comment. **Scope:** integrity pinning and update control for
 agent skill bundles (`SKILL.md` + accompanying files), independent of any agent runtime.
@@ -67,7 +67,7 @@ Field semantics:
 - `tree_hash` = SHA-256 over the concatenation of `"<path>\0<digest>\n"` for every entry of
   `files`, sorted by path. It is the single-value identity of the bundle.
 - `source` records provenance as `null` (unknown) or an object of three fields
-  (draft-03; this is the normative answer to discussion #588 Q1, "where does a skill's
+  (since draft-03; this is the normative answer to discussion #588 Q1, "where does a skill's
   source canonically live?" — **in the lockfile**):
   - `type` — `git | url | registry | vendor | local`. Derived from `resolved` when
     possible. It is machine-assigned, never authored in SKILL.md.
@@ -135,14 +135,31 @@ first read), which is before any verify step in an install flow would run. A `mo
 `untracked` verdict produced after that point is a receipt about an accident that already
 happened.
 
+**Harness-visible is defined by the workspace root** (draft-04, sharpened on @jimy-r's
+probe in discussion #588: loading follows reads, so a scan list is not a boundary). A
+location is harness-visible if it is inside the workspace root. Outside the workspace root:
+not visible. Inside it: assume visible, even in nested folders, even with innocuous names.
+A scan list or ignore file is not a boundary; a path the loader can reach is loadable.
+
 A conforming installer MUST follow verify-then-move ordering:
 
-1. Fetch and unpack into a staging location that is not harness-visible (outside any
-   skills/plugins directory the harness scans, or a directory the harness is configured to
-   ignore).
+1. Fetch and unpack into a staging location outside the workspace root.
 2. Run the full verify (or lock+verify) flow against the staged tree.
-3. Move only a fully verified tree into the load path, in a single atomic rename where the
-   filesystem allows it.
+3. Move only a fully verified tree into the load path, per the move rules below.
+
+**Move rules (normative).** A single atomic rename is the move where the filesystem offers
+it. Where it does not (staging and load path on different filesystems), a rename degrades
+to copy-and-delete, and a partially copied tree in the load path reopens the window this
+section closes. The required substitute in that case is: (1) verify outside the workspace
+root (staging), (2) copy into the target volume under a name the harness will not treat as
+a skills folder, (3) hash the copied tree again and compare against the verified tree,
+(4) only then rename into the load path. The re-hash in step 3 is the step that earns its
+keep: it is the only check that the bytes that will load are the bytes that were verified.
+
+**Visibility canary (SHOULD).** An installer SHOULD place a canary skill in the staging
+location, read a file beside it from a session, and confirm the session roster does not
+change. This is the only check of harness visibility that runs without knowing harness
+internals (credit: @jimy-r's probe, discussion #588).
 
 Verification of a tree already inside a load path MUST be reported as an incident check,
 not an install step: its verdicts describe what a harness may already have loaded. Hooks
@@ -225,7 +242,8 @@ shadowing is detected, and MAY offer an explicit override flag for the rare legi
 
 ## 9. Reference implementation
 
-`skilllock` (this repository) implements draft-03: `lock`, `verify`, `update`. The test
+`skilllock` (this repository) implements draft-04: `lock`, `verify`, `update` (the §4.3
+installer flow is specified for installers and is outside these three commands). The test
 corpus enforces the semantics of sections 3–6 (37 behavior tests), including the
 update-fetch rule as a structural property: `resolve_update_source()` can only ever return
 URLs from the pinned entry, so a bundle's own content cannot feed the fetch decision.
