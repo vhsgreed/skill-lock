@@ -26,6 +26,20 @@ Last verified: 2026-10-06 (desktop session, against git log + full test run)
   (num_ctx 65536) fixed the silent-truncation defect but agentic cron runs exceed the 180s
   inactivity limit on the geekom iGPU; watch jobs run on the main model meanwhile.
 
+## Loose-thread audit (2026-10-06, desktop session)
+- **Attribution check (Karl's request): all five search hits were FALSE POSITIVES** — none
+  refer to vhsgreed/skill-lock. The X "hot take" (poteto, Feb 2026), the explainx.ai blog,
+  and Vercel issue #542 are all about Vercel's project-level `skills-lock.json` (npx skills);
+  Sx (sleuth-io) and SkillFortify are adjacent tools with their own locks.
+- **Name collision is real:** `skills-lock.json` is used by Vercel's project lock (schemas
+  v1/v3 per #542), SkillFortify, and HappySkills. Spec/Show HN text must disambiguate.
+- Reddit post (r/clawdbot, 2.6k views / 3 shares) is Karl's; **no crossposting** (his rule).
+- Show HN: still unposted as of 10-06; draft refreshed to draft-04 and handed to Karl.
+- Benchmark re-run scheduled 03:00 via cron `1afa12ae96a9` (no_agent, script-only, delivers
+  to bot-chat). First run's numbers (possibly skewed by concurrent bot experiments):
+  e2b 93.6 t/s, e4b 54.8, qwen3-coder:30b 36.0, gemma4:26b-agentic 31.9, 12b 26.4.
+- Watches now deliver to bot-chat (was: local, invisible).
+
 ## Hardware / ops gotchas (geekom)
 - AMD Phoenix1 iGPU, 26GB shared RAM. Never have two 18GB models loaded: Ollama OOMs.
   Use keep_alive=0 when switching benchmarks.
