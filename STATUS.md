@@ -18,11 +18,16 @@ Last verified: 2026-10-06 (desktop session, against git log + full test run)
   monitor-gated, main model, deliver=bot-chat.
 
 ## Open decisions
-- **Q4 governance home — DECIDED (Karl, 2026-10-06): donate the spec to agentskills/
-  agentskills as a companion spec once draft-05 stabilizes.** Reference implementation
-  stays in vhsgreed/skill-lock. Announcement posted to #588 (desktop cursor,
-  discussioncomment-18783399) asking maintainers about mechanics (placement, licensing,
-  CLA/co-maintenance). Awaiting their reply; no action needed before draft-05.
+- **Q4 governance home — REVERSED (Karl, 2026-10-16): donation withdrawn; spec stays in
+  vhsgreed/skill-lock, versioned independently.** Trigger: atxpace (Jeff Pace, SkillRepo
+  founder, disclosed COI) argued lockfile = tooling not spec (discussioncomment-18961205);
+  jonathanhefner said the same of signatures on #252; no maintainer reply in 15 days.
+  Our reply posted (discussioncomment-18966415). Next: separate narrow agentskills
+  proposal for a normative skill-directory membership definition (exclusions, symlinks,
+  path normalization) that tree_hash can cite; atxpace said SkillRepo would implement
+  against it. Asked him: publish-time exclusions, symlink handling, status mapping
+  (edited=modified, missing=missing, stale has no counterpart).
+  Superseded: 2026-10-06 donate decision (discussioncomment-18783399).
 - **Local model setup** (benchmark running 2026-10-06): gemma4:26b is MoE A4B (128 experts,
   8 used); qwen3-coder:30b (A3B), gemma4:e2b/e4b/12b all on disk. gemma4:26b-agentic
   (num_ctx 65536) fixed the silent-truncation defect but agentic cron runs exceed the 180s
